@@ -6,9 +6,9 @@ class BallDetector:
         self.dp = 1.2
         self.min_dist = 50
         self.param1 = 210
-        self.param2 = 20
-        self.min_radius = 2
-        self.max_radius = 20
+        self.param2 = 15
+        self.min_radius = 1
+        self.max_radius = 15
         
         self.back_sub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=False)
 
