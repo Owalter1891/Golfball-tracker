@@ -22,7 +22,7 @@ def main(video_path, output_path):
     MAX_X_DIST = 5
     MAX_Y_DIST = 80
     locked_on = False
-    best_candidate = None
+    last_frame = None
 
     detector = BallDetector()
     tracker = KalmanTracker()
@@ -38,7 +38,7 @@ def main(video_path, output_path):
         ret, frame = cap.read()
         if not ret:
             break
-            
+        last_frame = frame.copy()
         frame_count += 1
         
         motion_mask = detector.detect_motion_mask(frame)
