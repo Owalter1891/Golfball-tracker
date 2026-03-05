@@ -2,6 +2,8 @@
 
 A project to detect and track a golf balls flight and then predict its trajectory and draw it.
 
+![Demo](results/output.gif)
+
 ## Project Structure
 
 ```
