@@ -1,14 +1,17 @@
 import cv2
 import argparse
 import os
+import numpy as np
 from detection import BallDetector
 from tracking import KalmanTracker
 from trajectory import TrajectoryAnalyzer
 from visualization import Visualizer
 
-def main(video_path, output_path):
+
+def main(video_path, output_path, track_club_head=False):
+
     cap = cv2.VideoCapture(video_path)
-    
+
     if not cap.isOpened():
         print(f"Error: Could not open video {video_path}")
         return
@@ -16,15 +19,8 @@ def main(video_path, output_path):
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    UPWARD_THRESHOLD_UPPER = -10
-    MIN_UPWARD_FRAMES = 7
-    candidate_tracks = []
-    MAX_X_DIST = 5
-    MAX_Y_DIST = 80
-    locked_on = False
-    last_frame = None
 
-    detector = BallDetector()
+    detector = BallDetector("../runs/detect/train/weights/best.pt")
     tracker = KalmanTracker()
     trajectory = TrajectoryAnalyzer()
     viz = Visualizer()
@@ -33,102 +29,84 @@ def main(video_path, output_path):
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
     frame_count = 0
-    
+    last_position = None
+    moving = False
+
+    MOVE_THRESHOLD = 4
+    MAX_JUMP_DISTANCE = 75
+
+    club_head_points = []
+
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        last_frame = frame.copy()
+
         frame_count += 1
-        
-        motion_mask = detector.detect_motion_mask(frame)
-        candidates = detector.detect(frame)
-        
-        filtered_candidates = []
 
-        for (x, y, r) in candidates:
-            if motion_mask[y, x] > 0:
-                filtered_candidates.append((x, y, r))
+        ball_detection = detector.detect_ball(frame)
 
-        candidates = filtered_candidates
-
-        if not locked_on:
-
-            new_tracks = []
-
-            for (x, y, r) in candidates:
-
-                matched = False
-
-                for track in candidate_tracks:
-
-                    last_x, last_y, _ = track["positions"][-1]
-
-                    dy = y - last_y
-                    dx = abs(x - last_x)
-
-                    if dx < MAX_X_DIST and abs(dy) < MAX_Y_DIST:
-
-                        if dy < UPWARD_THRESHOLD_UPPER:
-                            track["upward_frames"] += 1
-                            track["positions"].append((x, y, frame_count))
-                        
-                        matched = True
-
-                        if track["upward_frames"] >= MIN_UPWARD_FRAMES:
-                            locked_on = True
-                            tracker.update((x, y))
-                            for x, y, pos_frame in track["positions"]:
-                                tracker.update((x, y))
-                                trajectory.add_point((x, y, pos_frame))
-                            best_candidate = (x, y, r)
-                            break
-
-                if not matched:
-                    new_tracks.append({
-                        "positions": [(x, y, frame_count)],
-                        "upward_frames": 0,
-                    })
-
-            candidate_tracks.extend(new_tracks)
-
-            candidate_tracks = [
-                t for t in candidate_tracks if len(t["positions"]) < 15
-            ]
-        elif locked_on:
+        if ball_detection is not None and moving:
             pred_x, pred_y = tracker.predict()
-            min_dist = float('inf')
+            x, y, _, _ = ball_detection
+            dist = np.sqrt((x - pred_x) ** 2 + (y - pred_y) ** 2)
+            if dist > MAX_JUMP_DISTANCE:
+                ball_detection = None
 
-            for (x, y, r) in candidates:
-                dy = abs(y - pred_y)
-                dx = abs(x - pred_x)
+        if ball_detection is not None:
+            x, y, r, conf = ball_detection
 
-                if dx < 10 and 5 < dy < 40:
-                    tracker.update((x, y))
-                    trajectory.add_point((x, y, frame_count))
-                    viz.draw_ball(frame, x, y, r)
+            if last_position is not None and not moving:
+                dist = np.sqrt((x - last_position[0]) ** 2 + (y - last_position[1]) ** 2)
+                if dist > MOVE_THRESHOLD:
+                    moving = True
 
-        #viz.draw_trajectory(frame, trajectory.points)
-        viz.draw_predicted_trajectory(frame, trajectory, frame_count=frame_count)
-            
+            last_position = (x, y)
+            tracker.update((x, y))
+
+            if moving:
+                kx, ky = tracker.get_state()
+                trajectory.add_point((kx, ky, frame_count))
+                viz.draw_ball(frame, kx, ky, r)
+            else:
+                viz.draw_ball(frame, x, y, r)
+        elif moving:
+            pred_x, pred_y = tracker.predict()
+            trajectory.add_point((pred_x, pred_y, frame_count))
+
+        if track_club_head:
+            club_head = detector.detect_club_head(frame)
+            if club_head is not None:
+                cx, cy, r, conf = club_head
+                club_head_points.append((int(cx), int(cy)))
+
+            if len(club_head_points) > 1:
+                points_array = np.array(club_head_points, dtype=np.int32)
+                cv2.polylines(frame, [points_array], isClosed=False, color=(0, 255, 255), thickness=2)
+
+        viz.draw_predicted_trajectory(frame, trajectory, steps=100)
         viz.draw_stats(frame, frame_count, fps, "")
 
-        cv2.imshow('Golf Ball Tracker', frame)
+        cv2.imshow("Golf Ball Tracker", frame)
         out.write(frame)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
     cap.release()
     out.release()
     cv2.destroyAllWindows()
 
+
 if __name__ == "__main__":
+
     parser = argparse.ArgumentParser(description="Golf Ball Tracker")
+
     parser.add_argument("--video", type=str, required=True, help="Path to input video file")
     parser.add_argument("--output", type=str, default="results/output.mp4", help="Path to output video file")
-    
+    parser.add_argument("--track_club_head", action="store_true", help="Draw a trail for the detected club head")
+
     args = parser.parse_args()
-    
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    main(args.video, args.output)
+
+    main(args.video, args.output, track_club_head=args.track_club_head)
